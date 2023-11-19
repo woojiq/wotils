@@ -1,1 +1,24 @@
-Checks: '*'
+# https://clang.llvm.org/extra/clang-tidy/
+---
+Checks: '*,
+
+-altera-id-dependent-backward-branch,
+-altera-struct-pack-align,
+-altera-unroll-loops,
+-concurrency-mt-unsafe,
+-google-readability-braces-around-statements,
+-google-readability-todo,
+-misc-no-recursion,
+-readability-braces-around-statements,
+-readability-isolate-declaration,
+-readability-magic-numbers,
+
+-cppcoreguidelines-*,
+-hicpp*,
+'
+
+CheckOptions:
+  - key: readability-identifier-length.MinimumParameterNameLength
+    value: 2
+  - key: readability-identifier-length.MinimumVariableNameLength
+    value: 2

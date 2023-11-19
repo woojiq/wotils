@@ -15,10 +15,6 @@
 #include "include/args.h"
 #include "include/icmp.h"
 
-// TODO
-// better handling of timeout
-// add ipv6 support
-
 //Regular bold text
 #define BYEL "\e[1;33m"
 #define BBLU "\e[1;34m"
@@ -28,20 +24,18 @@
 //Reset
 #define CRESET "\e[0m"
 
-#define TIMEOUT 5000
-
 /// Generate string with char `ch` `len` times.
 /// Need to manually `free` to release allocated string.
 const char *gen_str(const char symb, size_t len) {
     char *str = malloc(len * sizeof(symb) + 1);
     str[len] = '\0';
-    #pragma unroll
     while (len > 0) {
         str[--len] = symb;
     }
     return str;
 }
 
+/// Global application state for statistics printed at the end of execution.
 static struct {
     uint sent;
     uint received;
@@ -52,36 +46,57 @@ static struct {
     0, 0, 0, 0, 0
 };
 
-// Creates a new string with the specified ansi color code.
-// Returns unchanged string if stdout is not a `tty` or the config option is false.
-const char *const color(const char *str, const char *color) {
-    if (Config.color == ClrNever) return str;
-    if (Config.color == ClrAuto && isatty(STDOUT_FILENO) == false) return str;
+/// Create a new string with the specified ansi color code.
+/// `free` can be set to true to `free` passed string.
+/// Return: new duplicate string if stdout is not a `tty` or the config option is false.
+const char *color(const char *str, const char *color, bool to_free) {
+    size_t str_len = strlen(str);
+    if (
+        config.color == ClrNever || 
+        (config.color == ClrAuto && isatty(STDOUT_FILENO)) == false
+    ) {
+        char *new_str = (char *)malloc(str_len + 1);
+        new_str[0] = '\0';
+        strcat(new_str, str);
+        if (to_free) free((void *)str);
+        return new_str;
+    }
 
     // Constructs new string as ColorCode->String->ResetColorCode->'\0'
-    size_t color_len = strlen(color), str_len = strlen(str), reset_len = strlen(CRESET);
+    size_t color_len = strlen(color);
+    size_t reset_len = strlen(CRESET);
     size_t len = color_len + str_len + reset_len + 1;
+
     char *new_str = (char *)malloc(len);
     memcpy(new_str, color, color_len);
     memcpy(new_str + color_len, str, str_len);
     memcpy(new_str + color_len + str_len, CRESET, reset_len);
     new_str[len - 1] = '\0';
+    if (to_free) free((void *)str);
     return new_str;
 }
 
+/// Greeting message printed before main loop.
 void greeting() {
-    const char *sep = color(gen_str('+', 5), BYEL);
-    printf("%s %s %s\n", sep, color("Woojiq's utils", BBLU), sep);
+    const char *sep = color(gen_str('+', 5), BYEL, true);
+    const char *name = color("Woojiq's utils", BBLU, false);
+    printf("%s %s %s\n", sep, name, sep);
     free((void *)sep);
+    free((void *)name);
 }
 
+/// Print statistics stored in `glb_state`.
 void finish() {
-    const char *sep = color(gen_str('-', 3), BWHT);
-    printf("%s %s ping statistics %s\n", sep, Config.hostname, sep);
+    const char *sep = color(gen_str('-', 3), BWHT, true);
+    printf("%s %s ping statistics %s\n", sep, config.hostname, sep);
     float perc;
-    if (glb_state.received) perc = (float)(glb_state.sent - glb_state.received) * 100 / glb_state.received;
-    else if (glb_state.sent) perc = 100;
-    else perc = 0;
+    if (glb_state.received) {
+        perc = (float)(glb_state.sent - glb_state.received) * 100 / (float)glb_state.received;
+    } else if (glb_state.sent) {
+        perc = 100;
+    } else {
+        perc = 0;
+    }
     printf(
         "%i packets transmitted, %i packets received, %i%% packet loss\n",
         glb_state.sent, glb_state.received, (int)perc
@@ -103,25 +118,27 @@ void setup_sigaction() {
     }
 }
 
-// Calculates time between `start` and `end` in milliseconds with precision.
+/// Calculate time between `start` and `end` in milliseconds with precision.
 double calc_time(const struct timespec *start, const struct timespec *end) {
+    #define MILLIS_IN_SEC (1000)
+    #define NANOS_IN_MILLI (1000000)
     double time = 
-        (end->tv_sec - start->tv_sec) * 1000 + 
-        (double)(end->tv_nsec - start->tv_nsec) / 1000000;
+        (double)(end->tv_sec - start->tv_sec) * MILLIS_IN_SEC + 
+        (double)(end->tv_nsec - start->tv_nsec) / NANOS_IN_MILLI;
     return time;
 }
 
-// Resolves host by name and creates raw socket for sending ICMP packets.
+/// Resolve host by name and creates raw socket for sending ICMP packets.
 int get_icmp_socket(struct sockaddr_storage *addr, socklen_t *addr_len) {
     struct addrinfo hints, *addrinfo_list, *paddr;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = (Config.ip == IPv4 ? AF_INET : (Config.ip == IPv6 ? AF_INET6 : AF_UNSPEC));
+    hints.ai_family = (config.ip == IPv4 ? AF_INET : (config.ip == IPv6 ? AF_INET6 : AF_UNSPEC));
     hints.ai_socktype = SOCK_RAW;
     hints.ai_protocol = IPPROTO_ICMP;
 
     int status;
-    if ((status = getaddrinfo(Config.hostname, NULL, &hints, &addrinfo_list)) != 0) {
-        fprintf(stderr, "ping: %s\n", gai_strerror(status));
+    if ((status = getaddrinfo(config.hostname, NULL, &hints, &addrinfo_list)) != 0) {
+        (void)fprintf(stderr, "ping: %s\n", gai_strerror(status));
         exit(1);
     }
 
@@ -143,17 +160,17 @@ int get_icmp_socket(struct sockaddr_storage *addr, socklen_t *addr_len) {
     return sockfd;
 }
 
-// Convert sockaddr (sockaddr_storage) to internet address.
+/// Convert sockaddr (sockaddr_storage) to internet address.
 void *get_in_addr(struct sockaddr *sa) {
-  if (sa->sa_family == AF_INET) {
-    return &(((struct sockaddr_in*)sa)->sin_addr);
-  } else {
+    if (sa->sa_family == AF_INET) {
+        return &(((struct sockaddr_in*)sa)->sin_addr);
+    }
     return &(((struct sockaddr_in6*)sa)->sin6_addr);
-  }
 }
 
+/// Pretty-print IP header
 void pr_iphdr(const struct iphdr *ip, const sa_family_t af_family) {
-    const char *sep = color(gen_str('=', 5), BWHT);
+    const char *sep = color(gen_str('=', 5), BWHT, true);
     // frag_off and type of service are skipped
     printf("\t%s IP Header %s\n", sep, sep);
     printf("\tVersion: %d\n", ip->version);
@@ -173,15 +190,16 @@ void pr_iphdr(const struct iphdr *ip, const sa_family_t af_family) {
     free((void *)sep);
 }
 
+/// Pretty-print ICMP header
 void pr_icmp(const IcmpPacket *icm) {
-    const char *sep = color(gen_str('=', 5), BWHT);
+    const char *sep = color(gen_str('=', 5), BWHT, true);
 
     printf("\t%s ICMP Header %s\n", sep, sep);
-    const char *str = icmp_func.to_str_pretty(icm);
-    char *last = str;
-    char *newline = NULL;
+    const char *const str = icmp_func.to_str_pretty(icm);
+    const char *last = str;
+    const char *newline = NULL;
     while ((newline = strchr(last, '\n')) != NULL) {
-        printf("\t%.*s", (newline - last) / sizeof(char) + 1, last);
+        printf("\t%.*s", (int)(newline - last) + 1, last);
         last = newline + 1;
     }
 
@@ -211,21 +229,22 @@ int main(int argc, char *argv[]) {
     char dest_ip[INET6_ADDRSTRLEN];
     inet_ntop(addr.ss_family, get_in_addr((struct sockaddr *)&addr), dest_ip, sizeof(dest_ip));
 
-    printf("PING %s (%s): %lu data bytes\n", Config.hostname, dest_ip, sizeof(IcmpPacket));
+    printf("PING %s (%s): %lu data bytes\n", config.hostname, dest_ip, sizeof(IcmpPacket));
 
     char buf[1028] = {0};
     struct iphdr *ip;
-    IcmpPacket *icm;
-    uint16_t max_seq = Config.count == 0 ? UINT16_MAX : Config.count;
+    IcmpPacket *icm = NULL;
+    uint16_t max_seq = config.count == 0 ? UINT16_MAX : config.count;
     for (uint16_t seq = 0; seq < max_seq; seq++) {
         if (seq) sleep(1);
         icm = icmp_func.new_echo_req((uint16_t)getpid(), seq);
         icmp_func.send(icm, sockfd, &addr);
+        free(icm);
 
         glb_state.sent ++;
         IcmpResult res = icmp_func.recv(&ip, &icm, sockfd, buf, sizeof(buf), &from, &from_len);
         if (res != 0) {
-            printf("%s: %s\n", Config.bin, icmp_func.strerror(res));
+            printf("%s: %s\n", config.bin, icmp_func.strerror(res));
             exit(1);
         }
 
@@ -234,12 +253,14 @@ int main(int argc, char *argv[]) {
         clock_gettime(CLOCK_MONOTONIC_RAW, &curr_time);
         double time = calc_time(&icm->ts_creation, &curr_time);
         add_time_to_stat(time);
+        const char *dest_str = color(dest_ip, UREG, false);
         printf(
             "%li bytes from %s: icmp_seq=%i time=%.3fms\n", 
-            sizeof(*ip) + sizeof(*icm), color(dest_ip, UREG), icm->h_seq, time
+            sizeof(*ip) + sizeof(*icm), dest_str, icm->h_seq, time
         );
+        free((void *)dest_str);
         // We can't parse Ethernet header since we do not use `AF_PACKET`. See `packet(7)`.
-        if (Config.verbosity > 0) {
+        if (config.verbosity > 0) {
             pr_iphdr(ip, addr.ss_family);
             pr_icmp(icm);
             const char *sep = gen_str('=', 55);

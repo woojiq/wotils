@@ -2,12 +2,13 @@
 #define PING_ICMP_H_
 
 #include <netinet/ip_icmp.h>
+#include <stdbool.h>
 
 /// Returns IPv4 checksum according to RFC 1071.
-uint16_t in_cksum(const char *addr, int size);
+uint16_t in_cksum(const char *addr, uint size);
 
 /// Icmp header with payload section containing creation timestamp.
-/// Fields always in native byte order and are converted internally before sending/after receiving.
+/// Fields are always in native byte order and are converted internally before sending/after receiving.
 typedef struct IcmpPacket {
     struct icmphdr header;
 #define h_type header.type
@@ -36,11 +37,11 @@ typedef struct icmp_func_set {
 
 extern const icmp_func_set icmp_func;
 
-/// Returns Icmp Echo request struct with timestamp in payload.
+/// Return: Icmp Echo request struct with timestamp in payload.
 IcmpPacket *new_echo_request(uint16_t id, uint16_t sequence);
 
 /// Send Icmp packet to socket with specified IP address.
-/// Returns number of bytes sent, on error, -1 is returned, and errno is set.
+/// Return: number of bytes sent, on error, -1 is returned, and errno is set.
 IcmpResult icmp_send(const IcmpPacket *self, int sockfd, const struct sockaddr_storage *addr);
 
 /// Verify Icmp packet checksum.
@@ -53,10 +54,10 @@ IcmpResult recv_ip_icmp(
     struct sockaddr_storage *addr, socklen_t *addr_len
 );
 
-/// Returns string describing error number.
+/// Return: string describing error number.
 const char *icmp_strerror(IcmpResult res);
 
-/// Returns pretty string header without timestamp.
+/// Return: pretty string header without timestamp.
 const char *icmp_to_str_pretty(const IcmpPacket *self);
 
 #endif

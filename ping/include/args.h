@@ -32,7 +32,7 @@ struct AppConfig {
     /// How many packets to send (0 - infinity).
     // uint16 because icmp.seq field is uint16.
     uint16_t count;
-} extern Config;
+} extern config;
 
 /// Parse command line arguments into `config` global variable.
 void parse_args(int argc, char *argv[]);

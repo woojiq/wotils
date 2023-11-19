@@ -1,0 +1,6 @@
+# Nix
+.direnv
+.cache
+result
+# Meson
+build

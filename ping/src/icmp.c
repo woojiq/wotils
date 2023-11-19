@@ -29,20 +29,23 @@ const char *icmp_strerror(IcmpResult res) {
     }
 }
 
-uint16_t in_cksum(const char *addr, int size) {
+uint16_t in_cksum(const char *addr, uint size) {
     int sum = 0;
-    while ((size -= 2) >= 0) {
+    while (size >= 2) {
         sum += *(uint16_t *)addr;
         addr += 2;
+        size -= 2;
     }
-    if (size == -1) {
+    if (size == 1) {
         sum += *(uint8_t *)addr;
     }
-    sum = (sum >> 16) + (sum & 0xffff);
+    const int uint16_mask = 0xffff;
+    sum = (sum >> 16) + (sum & uint16_mask);
     sum += (sum >> 16);
     return (uint16_t)(~sum);
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 IcmpPacket *new_echo_request(uint16_t id, uint16_t sequence) {
     IcmpPacket *icm = malloc(sizeof(IcmpPacket));
     memset(icm, 0, sizeof(*icm));
@@ -51,7 +54,7 @@ IcmpPacket *new_echo_request(uint16_t id, uint16_t sequence) {
     icm->h_id = id;
     icm->h_seq = sequence;
     icm->h_cksum = 0;
-    clock_gettime(CLOCK_MONOTONIC_RAW, (struct timespec *)&icm->ts_creation);
+    clock_gettime(CLOCK_MONOTONIC_RAW, &icm->ts_creation);
     icm->h_cksum = in_cksum((char *)icm, sizeof(*icm));
     return icm;
 }
@@ -84,14 +87,14 @@ IcmpResult recv_ip_icmp(
     struct iphdr **ip, IcmpPacket **icm, int sockfd, char buf[], int buf_len,
     struct sockaddr_storage *addr, socklen_t *addr_len
 ) {
-    int recv_len = recvfrom(sockfd, buf, buf_len-1, 0, (struct sockaddr *)addr, addr_len);
+    size_t recv_len = recvfrom(sockfd, buf, buf_len-1, 0, (struct sockaddr *)addr, addr_len);
     if (recv_len == -1) {
         // perror("recvfrom");
         return IcmpRecvFromErr;
     }
 
     *ip = (struct iphdr *)buf;
-    struct iphdr *pip = (struct iphdr *)(*ip);
+    struct iphdr *pip = *ip;
     if (ip_verify_checksum(*ip) == false) return IcmpInvalidIpCksumErr;
     pip->tot_len = ntohs(pip->tot_len);
     pip->id = ntohs(pip->id);
@@ -100,7 +103,9 @@ IcmpResult recv_ip_icmp(
     *icm = (struct IcmpPacket *)(buf + pip->ihl * sizeof(int32_t));
     IcmpPacket *picm = (struct IcmpPacket *)(*icm);
     // If we're pinging localhost, we'll receive our message too, so filter them out.
-    if (picm->h_type == ICMP_ECHO) return recv_ip_icmp(ip, icm, sockfd, buf, buf_len, addr, addr_len);
+    if (picm->h_type == ICMP_ECHO) {
+        return recv_ip_icmp(ip, icm, sockfd, buf, buf_len, addr, addr_len);
+    }
     if (icmp_verify_checksum(picm) == false) return IcmpInvalidIcmpCksumErr;
 
     picm->h_id = ntohs(picm->h_id);
@@ -122,7 +127,7 @@ const char *icmp_to_str_pretty(const IcmpPacket *self) {
         self->h_id,
         self->h_seq
     ) == -1) {
-        fprintf(stderr, "critical error while calling asprintf\n");
+        (void)fprintf(stderr, "critical error while calling asprintf\n");
         exit(1);
     };
     return str;
