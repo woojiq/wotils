@@ -25,8 +25,9 @@
         meson
         ninja
         gdb
-        # Network utils
+        # Network utils for debugging
         tcpdump
+        inetutils
       ];
     };
   };

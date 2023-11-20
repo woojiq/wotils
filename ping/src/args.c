@@ -16,7 +16,8 @@ void help_message() {
         "Send ICMP ECHO_REQUEST packets to network hosts.\n\n"
         " Options:\n"
         "  -c, --count <NUM>          stop after sending NUMBER packets\n"
-        "      --ip <4|6|auto>        ip version to use\n"
+        "      --ip4                  use IPv4 for sending packets\n"
+        "      --ip6                  use IPv6 for sending packets\n"
         "      --color <WHEN>         WHEN is 'always', 'never', or 'auto'\n"
         "      --help                 show this message\n"
         "  -v, --verbose              verbose output\n"
@@ -49,7 +50,8 @@ static const struct option long_options[] = {
     {"verbose", no_argument, 0, 'v'},
     {"color", required_argument, 0, 0},
     {"count", required_argument, 0, 'c'},
-    {"ip", required_argument, 0, 0},
+    {"ip4", no_argument, 0, 0},
+    {"ip6", no_argument, 0, 0},
     {0, 0, 0, 0}
 };
 
@@ -73,20 +75,10 @@ void parse_args_long(int index) {
         }
         break;
     case 4:
-        if (!strcmp(optarg, "4")) config.ip = IPv4;
-        else if (!strcmp(optarg, "6")) {
-            config.ip = IPv6;
-            (void)fprintf(stderr, "ipv6 support is unimplemented yet!\n");
-            usage_and_exit(1);
-        }
-        else if (!strcmp(optarg, "auto")) config.ip = IPAny;
-        else {
-            (void)fprintf(
-                stderr, "'%s': valid values: 4, 6, auto.\n", 
-                long_options[index].name
-            );
-            usage_and_exit(1);
-        }
+        config.ip = IPv4;
+        break;
+    case 5:
+        config.ip = IPv6;
         break;
     default:
         usage_and_exit(1);

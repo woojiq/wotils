@@ -21,14 +21,20 @@ First of all, don't forget to run it with the `--help` option to see available f
 You need to run this command with `sudo` because it uses raw Linux sockets under the hood. This can be solved with file capabilities, but I haven't figured it out yet🧐🙈.
 
 ## Showcase
+<p float="left">
 <img src="misc/showcase.png" alt="Execution" width="49%"/>
 <img src="misc/help.png" alt="Help" width="49%"/>
+</p>
 
 ## Contribution
 If you want to see a feature, better documentation, or add your platform to nix flake - fill an issue and I'll be happy to do it. I didn't set out to create the most enjoyable product for the end user on the beginning.
 
 ## Plans before v0.2
 - [ ] IPv6 support.
+- [ ] Refactor *main.c* to make it ip version agnostic (move to libraries).
+
+## Todo Pool
+- [ ] Use link-layer access sockets to receive IPv6 and Ethernet data.
 - [ ] Add timeout option.
 - [ ] Write man page.
-- [ ] Improve the code related to colored output.
+- [ ] Rework colored output.

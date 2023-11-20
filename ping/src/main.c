@@ -132,9 +132,15 @@ double calc_time(const struct timespec *start, const struct timespec *end) {
 int get_icmp_socket(struct sockaddr_storage *addr, socklen_t *addr_len) {
     struct addrinfo hints, *addrinfo_list, *paddr;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = (config.ip == IPv4 ? AF_INET : (config.ip == IPv6 ? AF_INET6 : AF_UNSPEC));
+    // There is no AF_UNSPEC equivalent for IPPROTO_ICMP, so we need to select version manually.
+    if (config.ip == IPv4) {
+        hints.ai_family = AF_INET;
+        hints.ai_protocol = IPPROTO_ICMP;
+    } else if (config.ip == IPv6) {
+        hints.ai_family = AF_INET6;
+        hints.ai_protocol = IPPROTO_ICMPV6;
+    }
     hints.ai_socktype = SOCK_RAW;
-    hints.ai_protocol = IPPROTO_ICMP;
 
     int status;
     if ((status = getaddrinfo(config.hostname, NULL, &hints, &addrinfo_list)) != 0) {
@@ -169,10 +175,10 @@ void *get_in_addr(struct sockaddr *sa) {
 }
 
 /// Pretty-print IP header
-void pr_iphdr(const struct iphdr *ip, const sa_family_t af_family) {
+void pr_iphdr(const struct iphdr *ip, const sa_family_t af) {
     const char *sep = color(gen_str('=', 5), BWHT, true);
     // frag_off and type of service are skipped
-    printf("\t%s IP Header %s\n", sep, sep);
+    printf("\t%s IPv4 Header %s\n", sep, sep);
     printf("\tVersion: %d\n", ip->version);
     printf("\tHeader Length: %d\n", ip->ihl);
     printf("\tTotal Length: %d\n", ntohs(ip->tot_len));
@@ -181,10 +187,10 @@ void pr_iphdr(const struct iphdr *ip, const sa_family_t af_family) {
     printf("\tProtocol: %d\n", ip->protocol);
     printf("\tChecksum (verified): %d\n", ntohs(ip->check));
 
-    char str[INET6_ADDRSTRLEN];
-    inet_ntop(af_family, &ip->saddr, str, sizeof(str));
+    char str[INET_ADDRSTRLEN];
+    inet_ntop(af, &ip->saddr, str, sizeof(str));
     printf("\tSource IP: %s\n", str);
-    inet_ntop(af_family, &ip->daddr, str, sizeof(str));
+    inet_ntop(af, &ip->daddr, str, sizeof(str));
     printf("\tDestination IP: %s\n", str);
 
     free((void *)sep);
@@ -195,13 +201,11 @@ void pr_icmp(const IcmpPacket *icm) {
     const char *sep = color(gen_str('=', 5), BWHT, true);
 
     printf("\t%s ICMP Header %s\n", sep, sep);
-    const char *const str = icmp_func.to_str_pretty(icm);
-    const char *last = str;
-    const char *newline = NULL;
-    while ((newline = strchr(last, '\n')) != NULL) {
-        printf("\t%.*s", (int)(newline - last) + 1, last);
-        last = newline + 1;
-    }
+    printf("\tType: %d\n", icm->h_type);
+    printf("\tCode: %d\n", icm->h_code);
+    printf("\tChecksum: %d\n", icm->h_cksum);
+    printf("\tId: %d\n", icm->h_id);
+    printf("\tSeq: %d\n", icm->h_seq);
 
     free((void *)sep);
 }
@@ -214,6 +218,39 @@ void add_time_to_stat(const double time) {
         glb_state.t_sum += time;
         if (time < glb_state.t_min) glb_state.t_min = time;
         else if (time > glb_state.t_max) glb_state.t_max = time;
+    }
+}
+
+void process_ip4_response(
+    const struct iphdr *ip4, const struct IcmpPacket *icm,
+    const char *dest_str, sa_family_t fam,
+    double time
+) {
+    printf(
+        "%li bytes from %s: icmp_seq=%i time=%.3fms\n", 
+        sizeof(*ip4) + sizeof(*icm), dest_str, icm->h_seq, time
+    );
+    // We can't parse Ethernet header since we do not use `AF_PACKET`. See `packet(7)`.
+    if (config.verbosity > 0) {
+        pr_iphdr(ip4, fam);
+        pr_icmp(icm);
+        const char *sep = gen_str('=', 55);
+        printf("%s\n", sep);
+        free((void *)sep);
+    }
+}
+
+void process_ip6_response(const struct IcmpPacket *icm, const char *dest_str, double time) {
+    printf(
+        "%li bytes from %s: icmp_seq=%i time=%.3fms\n", 
+        sizeof(*icm), dest_str, icm->h_seq, time
+    );
+    // We can't parse Ethernet header since we do not use `AF_PACKET`. See `packet(7)`.
+    if (config.verbosity > 0) {
+        pr_icmp(icm);
+        const char *sep = gen_str('=', 55);
+        printf("%s\n", sep);
+        free((void *)sep);
     }
 }
 
@@ -231,18 +268,27 @@ int main(int argc, char *argv[]) {
 
     printf("PING %s (%s): %lu data bytes\n", config.hostname, dest_ip, sizeof(IcmpPacket));
 
-    char buf[1028] = {0};
-    struct iphdr *ip;
+    uint16_t pid = (uint16_t)getpid();
+    u_char buf[128] = {0};
+    struct iphdr *ip4;
     IcmpPacket *icm = NULL;
     uint16_t max_seq = config.count == 0 ? UINT16_MAX : config.count;
     for (uint16_t seq = 0; seq < max_seq; seq++) {
         if (seq) sleep(1);
-        icm = icmp_func.new_echo_req((uint16_t)getpid(), seq);
+        if (config.ip == IPv4) {
+            icm = icmp_func.new_echo4_req(pid, seq);
+        } else {
+            struct sockaddr_in6 *dest = (struct sockaddr_in6 *)&addr;
+            // FIXME find out source address
+            icm = icmp_func.new_echo6_req(in6addr_loopback, dest->sin6_addr, pid, seq);
+        }
         icmp_func.send(icm, sockfd, &addr);
         free(icm);
 
         glb_state.sent ++;
-        IcmpResult res = icmp_func.recv(&ip, &icm, sockfd, buf, sizeof(buf), &from, &from_len);
+        IcmpResult res;
+        if (config.ip == IPv4) res = icmp_func.recv4(&ip4, &icm, sockfd, buf, sizeof(buf), &from, &from_len);
+        else res = icmp_func.recv6(&icm, sockfd, buf, sizeof(buf), &from, &from_len);
         if (res != 0) {
             printf("%s: %s\n", config.bin, icmp_func.strerror(res));
             exit(1);
@@ -253,20 +299,14 @@ int main(int argc, char *argv[]) {
         clock_gettime(CLOCK_MONOTONIC_RAW, &curr_time);
         double time = calc_time(&icm->ts_creation, &curr_time);
         add_time_to_stat(time);
+
         const char *dest_str = color(dest_ip, UREG, false);
-        printf(
-            "%li bytes from %s: icmp_seq=%i time=%.3fms\n", 
-            sizeof(*ip) + sizeof(*icm), dest_str, icm->h_seq, time
-        );
-        free((void *)dest_str);
-        // We can't parse Ethernet header since we do not use `AF_PACKET`. See `packet(7)`.
-        if (config.verbosity > 0) {
-            pr_iphdr(ip, addr.ss_family);
-            pr_icmp(icm);
-            const char *sep = gen_str('=', 55);
-            printf("%s\n", sep);
-            free((void *)sep);
+        if (config.ip == IPv4) {
+            process_ip4_response(ip4, icm, dest_str, addr.ss_family, time);
+        } else {
+            process_ip6_response(icm, dest_str, time);
         }
+        free((void *)dest_str);
     }
     finish();
     return 0;

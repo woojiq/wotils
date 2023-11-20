@@ -5,17 +5,13 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#include "icmp.h"
+
 /// Print help message to the stdin.
 void help_message();
 
 /// Print usage message to the stdin and exit with status code.
 void usage_and_exit(int status_code);
-
-enum ip_config {
-    IPv4 = 4,
-    IPv6 = 6,
-    IPAny = 0,
-};
 
 enum color_config {
     ClrAlways = 1,
@@ -24,7 +20,7 @@ enum color_config {
 };
 
 struct AppConfig {
-    enum ip_config ip;
+    IpVersion ip;
     char *hostname;
     char *bin;
     uint verbosity;

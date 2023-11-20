@@ -7,11 +7,12 @@
 #include "include/icmp.h"
 
 const icmp_func_set icmp_func = {
-    .new_echo_req = new_echo_request,
+    .new_echo4_req = new_echo4_request,
+    .new_echo6_req = new_echo6_request,
     .send = icmp_send,
-    .recv = recv_ip_icmp,
+    .recv4 = recv_ip4_icmp,
+    .recv6 = recv_ip6_icmp,
     .strerror = icmp_strerror,
-    .to_str_pretty = icmp_to_str_pretty,
 };
 
 const char *icmp_strerror(IcmpResult res) {
@@ -23,14 +24,37 @@ const char *icmp_strerror(IcmpResult res) {
     case IcmpRecvFromErr:
         return "error while receiving message from the socket";
     case IcmpInvalidIpCksumErr:
-        return "recieved ip frame with invalid checksum";
+        return "received ip frame with invalid checksum";
     case IcmpInvalidIcmpCksumErr:
-        return "recieved icmp packet with invalid checksum";
+        return "received icmp packet with invalid checksum";
     }
 }
 
-uint16_t in_cksum(const char *addr, uint size) {
-    int sum = 0;
+/// IcmpV6 Pseudo Header according to https://en.wikipedia.org/wiki/ICMPv6#Checksum
+typedef struct Icmp6PseudoHeader {
+    struct in6_addr src;
+    struct in6_addr dest;
+    // IcmpV6 packet length
+    uint length;
+    // Zeros
+    const uint8_t _padding[3];
+    // Always 58
+    const uint8_t header;
+} Icmp6PseudoHeader;
+
+Icmp6PseudoHeader new_pseudo_header(struct in6_addr src, struct in6_addr dest, uint length) {
+    Icmp6PseudoHeader ph = {
+        .src = src,
+        .dest = dest,
+        .length = length,
+        ._padding = {0, 0, 0},
+        .header = 58
+    };
+    return ph;
+}
+
+uint16_t in_cksum(const char *addr, size_t size, uint16_t start) {
+    int sum = start;
     while (size >= 2) {
         sum += *(uint16_t *)addr;
         addr += 2;
@@ -45,17 +69,27 @@ uint16_t in_cksum(const char *addr, uint size) {
     return (uint16_t)(~sum);
 }
 
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-IcmpPacket *new_echo_request(uint16_t id, uint16_t sequence) {
+IcmpPacket *new_echo_default(uint16_t id, uint16_t seq) {
     IcmpPacket *icm = malloc(sizeof(IcmpPacket));
     memset(icm, 0, sizeof(*icm));
-    icm->h_type = ICMP_ECHO;
-    icm->h_code = 0;
-    icm->h_id = id;
-    icm->h_seq = sequence;
-    icm->h_cksum = 0;
+    icm->h_id = htons(id);
+    icm->h_seq = htons(seq);
     clock_gettime(CLOCK_MONOTONIC_RAW, &icm->ts_creation);
-    icm->h_cksum = in_cksum((char *)icm, sizeof(*icm));
+    return icm;
+}
+
+IcmpPacket *new_echo4_request(uint16_t id, uint16_t seq) {
+    IcmpPacket *icm = new_echo_default(id, seq);
+    icm->h_type = ICMP_ECHO;
+    icm->h_cksum = in_cksum((char *)icm, sizeof(*icm), 0);
+    return icm;
+}
+
+IcmpPacket *new_echo6_request(struct in6_addr src, struct in6_addr dest, uint16_t id, uint16_t seq) {
+    IcmpPacket *icm = new_echo_default(id, seq);
+    icm->h_type = ICMP6_ECHO_REQUEST;
+    Icmp6PseudoHeader ph = new_pseudo_header(src, dest, sizeof(*icm));
+    icm->h_cksum = in_cksum((char *)icm, sizeof(*icm), in_cksum((char *)&ph, sizeof(ph), 0));
     return icm;
 }
 
@@ -66,10 +100,11 @@ IcmpResult icmp_send(const IcmpPacket *self, int sockfd, const struct sockaddr_s
     return IcmpOk;
 }
 
-bool icmp_verify_checksum(IcmpPacket *self) {
+bool icmp_verify_checksum(IcmpPacket *self, const Icmp6PseudoHeader *const pseudo) {
     uint16_t save = self->h_cksum;
     self->h_cksum = 0;
-    uint16_t cksum = in_cksum((char *)self, sizeof(*self));
+    uint16_t start = (pseudo == NULL ? 0 : in_cksum((char *)pseudo, sizeof(*pseudo), 0));
+    uint16_t cksum = in_cksum((char *)self, sizeof(*self), start);
     self->h_cksum = save;
     return save == cksum;
 }
@@ -78,16 +113,16 @@ bool icmp_verify_checksum(IcmpPacket *self) {
 bool ip_verify_checksum(struct iphdr *ip) {
     uint16_t save = ip->check;
     ip->check = 0;
-    uint16_t cksum = in_cksum((char *)ip, ip->ihl * sizeof(int32_t));
+    uint16_t cksum = in_cksum((char *)ip, ip->ihl * sizeof(int32_t), 0);
     ip->check = save;
     return save == cksum;
 }
 
-IcmpResult recv_ip_icmp(
-    struct iphdr **ip, IcmpPacket **icm, int sockfd, char buf[], int buf_len,
+IcmpResult recv_ip4_icmp(
+    struct iphdr **ip, IcmpPacket **icm, int sockfd, u_char buf[], int buf_len,
     struct sockaddr_storage *addr, socklen_t *addr_len
 ) {
-    size_t recv_len = recvfrom(sockfd, buf, buf_len-1, 0, (struct sockaddr *)addr, addr_len);
+    size_t recv_len = recvfrom(sockfd, buf, buf_len, 0, (struct sockaddr *)addr, addr_len);
     if (recv_len == -1) {
         // perror("recvfrom");
         return IcmpRecvFromErr;
@@ -104,31 +139,36 @@ IcmpResult recv_ip_icmp(
     IcmpPacket *picm = (struct IcmpPacket *)(*icm);
     // If we're pinging localhost, we'll receive our message too, so filter them out.
     if (picm->h_type == ICMP_ECHO) {
-        return recv_ip_icmp(ip, icm, sockfd, buf, buf_len, addr, addr_len);
+        return recv_ip4_icmp(ip, icm, sockfd, buf, buf_len, addr, addr_len);
     }
-    if (icmp_verify_checksum(picm) == false) return IcmpInvalidIcmpCksumErr;
+    if (icmp_verify_checksum(picm, NULL) == false) return IcmpInvalidIcmpCksumErr;
 
     picm->h_id = ntohs(picm->h_id);
     picm->h_seq = ntohs(picm->h_seq);
     return IcmpOk;
 }
 
-const char *icmp_to_str_pretty(const IcmpPacket *self) {
-    char *str = NULL;
-    if (asprintf(&str, 
-        "Type: %d\n"
-        "Code: %d\n"
-        "Checksum: %d\n"
-        "Id: %d\n"
-        "Seq: %d\n",
-        self->h_type,
-        self->h_code,
-        self->h_cksum,
-        self->h_id,
-        self->h_seq
-    ) == -1) {
-        (void)fprintf(stderr, "critical error while calling asprintf\n");
-        exit(1);
-    };
-    return str;
+IcmpResult recv_ip6_icmp(
+    IcmpPacket **icm, int sockfd, u_char buf[], int buf_len,
+    struct sockaddr_storage *addr, socklen_t *addr_len
+) {
+    size_t recv_len = recvfrom(sockfd, buf, buf_len, 0, (struct sockaddr *)addr, addr_len);
+    if (recv_len == -1) {
+        // perror("recvfrom");
+        return IcmpRecvFromErr;
+    }
+
+    *icm = (struct IcmpPacket *)buf;
+    IcmpPacket *picm = (struct IcmpPacket *)(*icm);
+    // If we're pinging localhost, we'll receive our message too, so filter them out.
+    if (picm->h_type == ICMP6_ECHO_REQUEST) {
+        return recv_ip6_icmp(icm, sockfd, buf, buf_len, addr, addr_len);
+    }
+    // TODO verify checksum
+    // Icmp6PseudoHeader ph = new_pseudo_header((*ip)->ip6_src, (*ip)->ip6_dst, (*ip)->ip6_plen);
+    // if (icmp_verify_checksum(picm, &ph) == false) return IcmpInvalidIcmpCksumErr;
+
+    picm->h_id = ntohs(picm->h_id);
+    picm->h_seq = ntohs(picm->h_seq);
+    return IcmpOk;
 }
