@@ -31,6 +31,7 @@ If you want to see a feature, better documentation, or add your platform to nix 
 
 ## Plans before v0.2
 - [ ] IPv6 support.
+- [ ] Migrate to Makefile
 - [ ] Refactor *main.c* to make it ip version agnostic (move to libraries).
 
 ## Todo Pool

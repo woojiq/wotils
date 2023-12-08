@@ -1,4 +1,4 @@
-#include "include/args.h"
+#include "../include/args.h"
 
 #include <getopt.h>
 #include <stdbool.h>

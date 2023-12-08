@@ -12,8 +12,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "include/args.h"
-#include "include/icmp.h"
+#include "../include/args.h"
+#include "../include/icmp.h"
 
 //Regular bold text
 #define BYEL "\e[1;33m"

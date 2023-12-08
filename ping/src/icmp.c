@@ -4,7 +4,7 @@
 #include <string.h>
 #include <time.h>
 
-#include "include/icmp.h"
+#include "../include/icmp.h"
 
 const icmp_func_set icmp_func = {
     .new_echo4_req = new_echo4_request,
